@@ -1,0 +1,8 @@
+{
+  "appId": "com.im.roturascd",
+  "appName": "App Roturas CD",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

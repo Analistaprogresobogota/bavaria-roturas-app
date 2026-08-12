@@ -1,0 +1,143 @@
+// Lectura/escritura de la tabla "registros" (una fila = una rotura
+// reportada). Escritura offline-first: si falla la red, el registro queda
+// guardado ya mismo en la cache local (para que Registros/Tablero lo vean
+// de una) y en la cola de sincronizacion (para subirlo solo cuando vuelva
+// el internet).
+//
+// Backend: usa api-roturas (VITE_API_URL) si esta configurada — es la API
+// propia que habla con la base de datos de Tecnologia. Si no, cae a
+// Supabase (comportamiento original) para no romper el piloto mientras
+// Tecnologia no tenga esa API desplegada. Si ninguna esta configurada,
+// trabaja solo con la cache local.
+import { supabase } from './supabaseClient.js';
+import { api, API_LISTO, suscribirseEventos } from './apiClient.js';
+import { SUPABASE_LISTO } from '../config.js';
+import { leerCache, escribirCache, encolar } from './colaSincronizacion.js';
+
+const TABLA = 'registros';
+
+// Columnas livianas para Registros/Tablero (solo aplica al camino
+// Supabase; api-roturas ya decide esto del lado del servidor) — a
+// proposito NO incluye foto, foto_conciliador ni firma (base64, pueden
+// pesar cientos de KB cada una). Ver migracion-v3.sql.
+const COLUMNAS_LISTA =
+  'id,creado_en,fecha,turno,ubicacion,material,cantidad,causal_codigo,causal_label,causal_categoria,estado_e,descripcion,reportante,reportante_usuario_id,supervisor1,supervisor2,conciliador,opm,sede,tiene_foto,tiene_foto_conciliador,tiene_firma';
+
+// Devuelve { datos, desdeCache }. desdeCache=true significa que NO se pudo
+// conectar con el backend ahorita y lo que se ve es la ultima copia
+// guardada en este dispositivo (puede estar desactualizada frente a lo que
+// hay en la nube) — quien llame debe avisarlo en la interfaz, no mostrarlo
+// como si fuera el dato fresco.
+export async function listarRegistros() {
+  if (API_LISTO) {
+    try {
+      const data = await api.get('/registros');
+      escribirCache(TABLA, data);
+      return { datos: data, desdeCache: false };
+    } catch (err) {
+      console.warn('listarRegistros: no se pudo leer de la API, usando cache local.', err);
+      return { datos: leerCache(TABLA), desdeCache: true };
+    }
+  }
+  if (supabase) {
+    try {
+      const { data, error } = await supabase.from(TABLA).select(COLUMNAS_LISTA).order('creado_en', { ascending: false });
+      if (error) throw error;
+      escribirCache(TABLA, data);
+      return { datos: data, desdeCache: false };
+    } catch (err) {
+      console.warn('listarRegistros: no se pudo leer de Supabase, usando cache local.', err);
+      return { datos: leerCache(TABLA), desdeCache: true };
+    }
+  }
+  return { datos: leerCache(TABLA), desdeCache: true };
+}
+
+// Trae la fila completa (incluidas foto, foto_conciliador y firma) para UN
+// registro puntual — se usa solo al abrir su detalle, nunca en el listado.
+export async function obtenerRegistroCompleto(id) {
+  if (API_LISTO) return api.get(`/registros/${id}`);
+  if (!supabase) return null;
+  const { data, error } = await supabase.from(TABLA).select('*').eq('id', id).single();
+  if (error) throw error;
+  return data;
+}
+
+async function subirRegistro(paraSubir) {
+  if (API_LISTO) return api.post('/registros', paraSubir);
+  const { data, error } = await supabase.from(TABLA).insert(paraSubir).select().single();
+  if (error) throw error;
+  return data;
+}
+
+async function borrarRegistro(id) {
+  if (API_LISTO) return api.del(`/registros/${id}`);
+  const { error } = await supabase.from(TABLA).delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function crearRegistro(datos) {
+  const registro = {
+    ...datos,
+    id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    creado_en: new Date().toISOString(),
+  };
+
+  // Optimista: aparece de inmediato en la cache local, sin esperar red.
+  const cache = leerCache(TABLA);
+  escribirCache(TABLA, [registro, ...cache]);
+
+  if ((API_LISTO || SUPABASE_LISTO) && navigator.onLine) {
+    try {
+      const { id: _idLocal, ...paraSubir } = registro;
+      const data = await subirRegistro(paraSubir);
+      // reemplaza el id local por el id real que asigno el backend
+      const actualizada = leerCache(TABLA).map((r) => (r.id === registro.id ? data : r));
+      escribirCache(TABLA, actualizada);
+      return data;
+    } catch {
+      encolar({ tipo: 'crear', tabla: TABLA, registro, idLocal: registro.id });
+      return registro;
+    }
+  }
+
+  encolar({ tipo: 'crear', tabla: TABLA, registro, idLocal: registro.id });
+  return registro;
+}
+
+export async function eliminarRegistro(id) {
+  const cache = leerCache(TABLA).filter((r) => r.id !== id);
+  escribirCache(TABLA, cache);
+  if ((API_LISTO || SUPABASE_LISTO) && !String(id).startsWith('local-')) {
+    try {
+      await borrarRegistro(id);
+    } catch (err) {
+      if (navigator.onLine) throw err;
+      encolar({ tipo: 'eliminar', tabla: TABLA, id });
+    }
+  }
+}
+
+// Ejecuta UNA operacion encolada de esta tabla (la llama el sincronizador global).
+export async function ejecutarOperacionRegistros(op) {
+  if (op.tipo === 'crear') {
+    const { id: _idLocal, ...paraSubir } = op.registro;
+    const data = await subirRegistro(paraSubir);
+    if (op.idLocal) {
+      const cache = leerCache(TABLA).map((r) => (r.id === op.idLocal ? data : r));
+      escribirCache(TABLA, cache);
+    }
+  } else if (op.tipo === 'eliminar') {
+    await borrarRegistro(op.id);
+  }
+}
+
+export function suscribirseCambios(callback) {
+  if (API_LISTO) return suscribirseEventos('/registros/eventos', callback);
+  if (!supabase) return () => {};
+  const canal = supabase
+    .channel('registros-cambios')
+    .on('postgres_changes', { event: '*', schema: 'public', table: TABLA }, callback)
+    .subscribe();
+  return () => supabase.removeChannel(canal);
+}
