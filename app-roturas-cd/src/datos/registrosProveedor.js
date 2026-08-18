@@ -70,25 +70,25 @@ export async function listarRegistros() {
   if (API_LISTO) {
     try {
       const data = await api.get('/registros');
-      escribirCache(TABLA, data);
+      await escribirCache(TABLA, data);
       return { datos: data, desdeCache: false };
     } catch (err) {
       console.warn('listarRegistros: no se pudo leer de la API, usando cache local.', err);
-      return { datos: leerCache(TABLA), desdeCache: true };
+      return { datos: await leerCache(TABLA), desdeCache: true };
     }
   }
   if (supabase) {
     try {
       const { data, error } = await supabase.from(TABLA).select(COLUMNAS_LISTA).order('creado_en', { ascending: false });
       if (error) throw error;
-      escribirCache(TABLA, data);
+      await escribirCache(TABLA, data);
       return { datos: data, desdeCache: false };
     } catch (err) {
       console.warn('listarRegistros: no se pudo leer de Supabase, usando cache local.', err);
-      return { datos: leerCache(TABLA), desdeCache: true };
+      return { datos: await leerCache(TABLA), desdeCache: true };
     }
   }
-  return { datos: leerCache(TABLA), desdeCache: true };
+  return { datos: await leerCache(TABLA), desdeCache: true };
 }
 
 // Trae la fila completa (incluidas foto, foto_conciliador y firma) para UN
@@ -140,55 +140,63 @@ async function borrarRegistro(id) {
 }
 
 export async function crearRegistro(datos) {
+  // Con api-roturas, el id se genera ACA (no lo asigna el servidor) y es el
+  // mismo en todo intento/reintento offline — es la llave idempotente: ver
+  // subirRegistro y POST /registros en api-roturas. Con Supabase (via
+  // deprecar) se sigue dejando que el backend asigne el id, como antes.
+  const idEstable = API_LISTO && typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : null;
   const registro = {
     ...datos,
-    id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: idEstable || `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     creado_en: new Date().toISOString(),
   };
 
   // Optimista: aparece de inmediato en la cache local, sin esperar red.
-  const cache = leerCache(TABLA);
-  escribirCache(TABLA, [registro, ...cache]);
+  const cache = await leerCache(TABLA);
+  await escribirCache(TABLA, [registro, ...cache]);
+
+  const paraSubir = idEstable ? { ...datos, id: idEstable } : datos;
 
   if ((API_LISTO || SUPABASE_LISTO) && navigator.onLine) {
     try {
-      const { id: _idLocal, ...paraSubir } = registro;
       const data = await subirRegistro(paraSubir);
       // reemplaza el id local por el id real que asigno el backend
-      const actualizada = leerCache(TABLA).map((r) => (r.id === registro.id ? data : r));
-      escribirCache(TABLA, actualizada);
+      const actualizada = (await leerCache(TABLA)).map((r) => (r.id === registro.id ? data : r));
+      await escribirCache(TABLA, actualizada);
       return data;
     } catch {
-      encolar({ tipo: 'crear', tabla: TABLA, registro, idLocal: registro.id });
+      await encolar({ tipo: 'crear', tabla: TABLA, registro: paraSubir, idLocal: registro.id });
       return registro;
     }
   }
 
-  encolar({ tipo: 'crear', tabla: TABLA, registro, idLocal: registro.id });
+  await encolar({ tipo: 'crear', tabla: TABLA, registro: paraSubir, idLocal: registro.id });
   return registro;
 }
 
 export async function eliminarRegistro(id) {
-  const cache = leerCache(TABLA).filter((r) => r.id !== id);
-  escribirCache(TABLA, cache);
+  const cache = (await leerCache(TABLA)).filter((r) => r.id !== id);
+  await escribirCache(TABLA, cache);
   if ((API_LISTO || SUPABASE_LISTO) && !String(id).startsWith('local-')) {
     try {
       await borrarRegistro(id);
     } catch (err) {
       if (navigator.onLine) throw err;
-      encolar({ tipo: 'eliminar', tabla: TABLA, id });
+      await encolar({ tipo: 'eliminar', tabla: TABLA, id });
     }
   }
 }
 
-// Ejecuta UNA operacion encolada de esta tabla (la llama el sincronizador global).
+// Ejecuta UNA operacion encolada de esta tabla (la llama el sincronizador
+// global). op.registro ya trae el id estable (ver crearRegistro) cuando
+// corresponde — se manda tal cual, sin quitarlo, para que el reintento sea
+// idempotente en vez de crear una fila nueva cada vez.
 export async function ejecutarOperacionRegistros(op) {
   if (op.tipo === 'crear') {
-    const { id: _idLocal, ...paraSubir } = op.registro;
-    const data = await subirRegistro(paraSubir);
+    const data = await subirRegistro(op.registro);
     if (op.idLocal) {
-      const cache = leerCache(TABLA).map((r) => (r.id === op.idLocal ? data : r));
-      escribirCache(TABLA, cache);
+      const cache = (await leerCache(TABLA)).map((r) => (r.id === op.idLocal ? data : r));
+      await escribirCache(TABLA, cache);
     }
   } else if (op.tipo === 'eliminar') {
     await borrarRegistro(op.id);

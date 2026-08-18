@@ -6,9 +6,10 @@ import { CONFIG, API_LISTO } from '../config.js';
 export { API_LISTO };
 
 async function solicitud(ruta, opciones = {}) {
+  const { headers: headersExtra, ...resto } = opciones;
   const resp = await fetch(`${CONFIG.apiUrl}${ruta}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opciones,
+    headers: { 'Content-Type': 'application/json', ...headersExtra },
+    ...resto,
   });
   if (!resp.ok) {
     const cuerpo = await resp.json().catch(() => ({}));

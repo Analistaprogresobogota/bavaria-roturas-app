@@ -19,7 +19,7 @@ export async function listarUsuarios() {
   if (API_LISTO) {
     try {
       const data = await api.get('/usuarios');
-      escribirCache(TABLA, data);
+      await escribirCache(TABLA, data);
       return data;
     } catch {
       return leerCache(TABLA);
@@ -29,7 +29,7 @@ export async function listarUsuarios() {
     try {
       const { data, error } = await supabase.from(TABLA).select('*').order('nombre');
       if (error) throw error;
-      escribirCache(TABLA, data);
+      await escribirCache(TABLA, data);
       return data;
     } catch {
       return leerCache(TABLA);
@@ -54,7 +54,7 @@ export async function login(usuario, password) {
     try {
       const { data, error } = await supabase.from(TABLA).select('*').eq('activo', true);
       if (error) throw error;
-      escribirCache(TABLA, data);
+      await escribirCache(TABLA, data);
       const encontrado = data.find((x) => normaliza(x.usuario) === u && x.password === password);
       return encontrado || null;
     } catch {
@@ -62,7 +62,7 @@ export async function login(usuario, password) {
     }
   }
 
-  const cache = leerCache(TABLA);
+  const cache = await leerCache(TABLA);
   const encontrado = cache.find((x) => normaliza(x.usuario) === u && x.password === password && x.activo !== false);
   return encontrado || null;
 }
@@ -74,7 +74,7 @@ export async function crearUsuario(datos) {
       return await api.post('/usuarios', registro);
     } catch (err) {
       if (navigator.onLine) throw err;
-      encolar({ tipo: 'crear', tabla: TABLA, registro });
+      await encolar({ tipo: 'crear', tabla: TABLA, registro });
       return { ...registro, id: `local-${Date.now()}` };
     }
   }
@@ -85,7 +85,7 @@ export async function crearUsuario(datos) {
       return data;
     } catch (err) {
       if (navigator.onLine) throw err;
-      encolar({ tipo: 'crear', tabla: TABLA, registro });
+      await encolar({ tipo: 'crear', tabla: TABLA, registro });
       return { ...registro, id: `local-${Date.now()}` };
     }
   }
@@ -98,7 +98,7 @@ export async function actualizarUsuario(id, cambios) {
       return await api.patch(`/usuarios/${id}`, cambios);
     } catch (err) {
       if (navigator.onLine) throw err;
-      encolar({ tipo: 'actualizar', tabla: TABLA, id, cambios });
+      await encolar({ tipo: 'actualizar', tabla: TABLA, id, cambios });
       return { id, ...cambios };
     }
   }
@@ -109,7 +109,7 @@ export async function actualizarUsuario(id, cambios) {
       return data;
     } catch (err) {
       if (navigator.onLine) throw err;
-      encolar({ tipo: 'actualizar', tabla: TABLA, id, cambios });
+      await encolar({ tipo: 'actualizar', tabla: TABLA, id, cambios });
       return { id, ...cambios };
     }
   }

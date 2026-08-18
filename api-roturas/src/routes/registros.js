@@ -74,18 +74,43 @@ registrosRouter.get('/:id', async (req, res) => {
   }
 });
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // POST /registros — crea un registro nuevo. Devuelve la fila completa ya
-// creada (con id y creado_en asignados por la base de datos).
+// creada (con id y creado_en asignados por la base de datos, salvo que el
+// cliente ya haya mandado un "id" propio — ver nota de idempotencia abajo).
+//
+// Idempotencia (ver informe tecnico de Tecnologia, seccion 5.4): la app
+// genera el "id" del lado del dispositivo ANTES de intentar subir el
+// registro, y lo reutiliza en cada reintento offline. Si el servidor ya
+// proceso esa solicitud pero la respuesta nunca llego al dispositivo (se
+// corto la señal justo ahi), el reintento con el mismo id no crea una fila
+// duplicada — el "on conflict (id) do nothing" lo detecta y aqui se
+// devuelve la fila que ya existia, como si la insercion hubiera funcionado
+// recien ahora.
 registrosRouter.post('/', async (req, res) => {
   try {
     const columnas = COLUMNAS_ESCRIBIBLES.filter((c) => req.body[c] !== undefined);
     if (columnas.length === 0) return res.status(400).json({ error: 'No se envio ningun dato.' });
-    const valores = columnas.map((c) => req.body[c]);
-    const marcadores = columnas.map((_, i) => `$${i + 1}`).join(', ');
+
+    const idCliente = typeof req.body.id === 'string' && UUID_RE.test(req.body.id) ? req.body.id : null;
+    const columnasFinal = idCliente ? ['id', ...columnas] : columnas;
+    const valoresFinal = idCliente ? [idCliente, ...columnas.map((c) => req.body[c])] : columnas.map((c) => req.body[c]);
+    const marcadores = columnasFinal.map((_, i) => `$${i + 1}`).join(', ');
+    const conflicto = idCliente ? 'on conflict (id) do nothing' : '';
+
     const { rows } = await pool.query(
-      `insert into ${REGISTROS} (${columnas.join(', ')}) values (${marcadores}) returning *`,
-      valores
+      `insert into ${REGISTROS} (${columnasFinal.join(', ')}) values (${marcadores}) ${conflicto} returning *`,
+      valoresFinal
     );
+
+    if (rows.length === 0 && idCliente) {
+      // Conflicto: esa id ya existia — es un reintento idempotente, no un
+      // registro nuevo. Se devuelve la fila ya existente en vez de fallar.
+      const existente = await pool.query(`select * from ${REGISTROS} where id = $1`, [idCliente]);
+      return res.status(200).json(existente.rows[0]);
+    }
+
     res.status(201).json(rows[0]);
     cambios.emit('registros');
   } catch (err) {
