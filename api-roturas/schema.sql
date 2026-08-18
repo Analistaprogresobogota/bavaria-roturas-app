@@ -1,9 +1,14 @@
--- Esquema de base de datos para "App de Roturas · CD", adaptado para
--- correr en un Postgres propio (Azure Database for PostgreSQL), sin
--- depender de nada especifico de Supabase.
+-- Esquema de base de datos para "App de Roturas · CD".
+--
+-- IMPORTANTE (ver informe tecnico de Tecnologia, agosto 2026): en la base
+-- corporativa, dentro del esquema "progreso", las tablas "usuarios" y
+-- "registros" YA EXISTEN y ya son compatibles con lo que necesita esta
+-- aplicacion (sus identificadores son UUID nativo). NO ejecutar este
+-- script contra "progreso" — solo sirve para levantar una copia local o
+-- de pruebas propia, con estructura equivalente, mientras se coordina el
+-- acceso real con Tecnologia.
 --
 -- Es seguro volver a correrlo (usa "if not exists").
--- Ejecutar UNA vez, conectado a la base "dbgroot", antes de arrancar la API.
 
 create extension if not exists pgcrypto;
 

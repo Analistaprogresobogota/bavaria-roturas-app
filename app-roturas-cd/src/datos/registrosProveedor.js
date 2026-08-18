@@ -10,11 +10,49 @@
 // Tecnologia no tenga esa API desplegada. Si ninguna esta configurada,
 // trabaja solo con la cache local.
 import { supabase } from './supabaseClient.js';
-import { api, API_LISTO, suscribirseEventos } from './apiClient.js';
+import { api, API_LISTO, suscribirseEventos, subirEvidencia, urlEvidencia } from './apiClient.js';
 import { SUPABASE_LISTO } from '../config.js';
 import { leerCache, escribirCache, encolar } from './colaSincronizacion.js';
 
 const TABLA = 'registros';
+
+// Que campo del registro corresponde a que "tipo" de evidencia en api-roturas.
+const CAMPOS_EVIDENCIA = { foto: 'suceso', foto_conciliador: 'conciliador', firma: 'firma' };
+
+// Cache en memoria: si un mismo evento genera varias filas (un reporte con
+// varios materiales, ver VistaOperativo), las tres evidencias son
+// EXACTAMENTE el mismo data URI en cada llamada — se sube una sola vez y se
+// reutiliza la misma ruta en todas las filas, en vez de subir el archivo
+// repetido (ver informe tecnico de Tecnologia: "evitar duplicados").
+const cacheSubidas = new Map();
+
+async function resolverRutaEvidencia(tipo, dataUri) {
+  if (cacheSubidas.has(dataUri)) return cacheSubidas.get(dataUri);
+  const promesa = subirEvidencia(tipo, dataUri);
+  cacheSubidas.set(dataUri, promesa);
+  try {
+    return await promesa;
+  } catch (err) {
+    cacheSubidas.delete(dataUri); // no cachear un intento fallido
+    throw err;
+  }
+}
+
+// Sube a la nube corporativa las evidencias que todavia esten como base64
+// (data:image/...;base64,...) y las reemplaza por su ruta relativa antes de
+// guardar el registro — Postgres ya nunca vuelve a recibir una imagen
+// completa en una columna de texto (ver informe tecnico de Tecnologia).
+async function resolverEvidencias(datos) {
+  if (!API_LISTO) return datos;
+  const resultado = { ...datos };
+  for (const [campo, tipo] of Object.entries(CAMPOS_EVIDENCIA)) {
+    const valor = resultado[campo];
+    if (typeof valor === 'string' && valor.startsWith('data:')) {
+      resultado[campo] = await resolverRutaEvidencia(tipo, valor);
+    }
+  }
+  return resultado;
+}
 
 // Columnas livianas para Registros/Tablero (solo aplica al camino
 // Supabase; api-roturas ya decide esto del lado del servidor) — a
@@ -56,15 +94,40 @@ export async function listarRegistros() {
 // Trae la fila completa (incluidas foto, foto_conciliador y firma) para UN
 // registro puntual — se usa solo al abrir su detalle, nunca en el listado.
 export async function obtenerRegistroCompleto(id) {
-  if (API_LISTO) return api.get(`/registros/${id}`);
+  if (API_LISTO) {
+    const registro = await api.get(`/registros/${id}`);
+    return resolverUrlsEvidencia(registro);
+  }
   if (!supabase) return null;
   const { data, error } = await supabase.from(TABLA).select('*').eq('id', id).single();
   if (error) throw error;
   return data;
 }
 
+// Con api-roturas, foto/foto_conciliador/firma guardan una RUTA relativa
+// (ej. "progreso/2026/08/{uuid}-suceso.jpg"), no la imagen — el contenedor
+// es privado, asi que para mostrarla hay que cambiar esa ruta por una URL
+// temporal firmada justo antes de pintar el detalle en pantalla. Un valor
+// que ya empiece con "data:" es una evidencia capturada offline que todavia
+// no se ha subido — se deja tal cual, se ve directo desde el dispositivo.
+async function resolverUrlsEvidencia(registro) {
+  if (!registro) return registro;
+  const resultado = { ...registro };
+  for (const campo of ['foto', 'foto_conciliador', 'firma']) {
+    const valor = resultado[campo];
+    if (typeof valor === 'string' && valor && !valor.startsWith('data:')) {
+      try {
+        resultado[campo] = await urlEvidencia(valor);
+      } catch (err) {
+        console.warn(`No se pudo obtener la URL de "${campo}"`, err);
+      }
+    }
+  }
+  return resultado;
+}
+
 async function subirRegistro(paraSubir) {
-  if (API_LISTO) return api.post('/registros', paraSubir);
+  if (API_LISTO) return api.post('/registros', await resolverEvidencias(paraSubir));
   const { data, error } = await supabase.from(TABLA).insert(paraSubir).select().single();
   if (error) throw error;
   return data;

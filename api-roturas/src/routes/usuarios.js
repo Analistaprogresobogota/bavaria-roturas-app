@@ -1,15 +1,24 @@
 import { Router } from 'express';
-import { pool } from '../db.js';
+import { pool, tabla } from '../db.js';
 
 export const usuariosRouter = Router();
 
+const USUARIOS = tabla('usuarios');
 const COLUMNAS_ESCRIBIBLES = ['nombre', 'usuario', 'password', 'rol', 'activo'];
+
+// Nunca se devuelve la contraseña al cliente — ni en login, ni en listados,
+// ni al crear/editar un usuario.
+const sinPassword = (fila) => {
+  if (!fila) return fila;
+  const { password, ...resto } = fila;
+  return resto;
+};
 
 // GET /usuarios — todas las cuentas (lo usa la pestaña Usuarios del Admin).
 usuariosRouter.get('/', async (req, res) => {
   try {
-    const { rows } = await pool.query('select * from usuarios order by nombre');
-    res.json(rows);
+    const { rows } = await pool.query(`select * from ${USUARIOS} order by nombre`);
+    res.json(rows.map(sinPassword));
   } catch (err) {
     console.error('GET /usuarios', err);
     res.status(500).json({ error: 'No se pudo consultar usuarios.' });
@@ -24,11 +33,11 @@ usuariosRouter.post('/login', async (req, res) => {
   if (!usuario || !password) return res.status(400).json({ error: 'Falta usuario o password.' });
   try {
     const { rows } = await pool.query(
-      'select * from usuarios where lower(usuario) = lower($1) and activo = true',
+      `select * from ${USUARIOS} where lower(usuario) = lower($1) and activo = true`,
       [String(usuario).trim()]
     );
     const encontrado = rows.find((u) => u.password === password);
-    res.json(encontrado || null);
+    res.json(sinPassword(encontrado) || null);
   } catch (err) {
     console.error('POST /usuarios/login', err);
     res.status(500).json({ error: 'No se pudo validar el usuario.' });
@@ -43,10 +52,10 @@ usuariosRouter.post('/', async (req, res) => {
     const valores = columnas.map((c) => req.body[c]);
     const marcadores = columnas.map((_, i) => `$${i + 1}`).join(', ');
     const { rows } = await pool.query(
-      `insert into usuarios (${columnas.join(', ')}) values (${marcadores}) returning *`,
+      `insert into ${USUARIOS} (${columnas.join(', ')}) values (${marcadores}) returning *`,
       valores
     );
-    res.status(201).json(rows[0]);
+    res.status(201).json(sinPassword(rows[0]));
   } catch (err) {
     console.error('POST /usuarios', err);
     res.status(500).json({ error: 'No se pudo crear el usuario (¿el usuario ya existe?).' });
@@ -61,11 +70,11 @@ usuariosRouter.patch('/:id', async (req, res) => {
     const asignaciones = columnas.map((c, i) => `${c} = $${i + 1}`).join(', ');
     const valores = columnas.map((c) => req.body[c]);
     const { rows } = await pool.query(
-      `update usuarios set ${asignaciones} where id = $${columnas.length + 1} returning *`,
+      `update ${USUARIOS} set ${asignaciones} where id = $${columnas.length + 1} returning *`,
       [...valores, req.params.id]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'No existe ese usuario.' });
-    res.json(rows[0]);
+    res.json(sinPassword(rows[0]));
   } catch (err) {
     console.error('PATCH /usuarios/:id', err);
     res.status(500).json({ error: 'No se pudo actualizar el usuario.' });

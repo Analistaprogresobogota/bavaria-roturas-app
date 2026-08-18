@@ -1,8 +1,11 @@
 import { Router } from 'express';
-import { pool } from '../db.js';
+import { pool, tabla } from '../db.js';
 import { cambios } from '../eventos.js';
+import { eliminarEvidencia } from '../storage.js';
 
 export const registrosRouter = Router();
+
+const REGISTROS = tabla('registros');
 
 // GET /registros/eventos — Server-Sent Events: reemplaza el tiempo real de
 // Supabase. El cliente abre esta conexion y recibe un mensaje cada vez que
@@ -50,7 +53,7 @@ const COLUMNAS_ESCRIBIBLES = [
 registrosRouter.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `select ${COLUMNAS_LISTA} from registros order by creado_en desc`
+      `select ${COLUMNAS_LISTA} from ${REGISTROS} order by creado_en desc`
     );
     res.json(rows);
   } catch (err) {
@@ -62,7 +65,7 @@ registrosRouter.get('/', async (req, res) => {
 // GET /registros/:id — fila completa (incluye foto, foto_conciliador, firma).
 registrosRouter.get('/:id', async (req, res) => {
   try {
-    const { rows } = await pool.query('select * from registros where id = $1', [req.params.id]);
+    const { rows } = await pool.query(`select * from ${REGISTROS} where id = $1`, [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ error: 'No existe ese registro.' });
     res.json(rows[0]);
   } catch (err) {
@@ -80,7 +83,7 @@ registrosRouter.post('/', async (req, res) => {
     const valores = columnas.map((c) => req.body[c]);
     const marcadores = columnas.map((_, i) => `$${i + 1}`).join(', ');
     const { rows } = await pool.query(
-      `insert into registros (${columnas.join(', ')}) values (${marcadores}) returning *`,
+      `insert into ${REGISTROS} (${columnas.join(', ')}) values (${marcadores}) returning *`,
       valores
     );
     res.status(201).json(rows[0]);
@@ -91,12 +94,32 @@ registrosRouter.post('/', async (req, res) => {
   }
 });
 
-// DELETE /registros/:id
+// DELETE /registros/:id — borra la fila y, solo si ninguna otra fila
+// comparte la misma ruta de evidencia (caso de un evento con varios
+// materiales), borra tambien el archivo en la nube. Nunca borra un archivo
+// que todavia tenga otra referencia activa.
 registrosRouter.delete('/:id', async (req, res) => {
   try {
-    await pool.query('delete from registros where id = $1', [req.params.id]);
-    res.status(204).end();
+    const { rows } = await pool.query(
+      `select foto, foto_conciliador, firma from ${REGISTROS} where id = $1`,
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'No existe ese registro.' });
+
+    await pool.query(`delete from ${REGISTROS} where id = $1`, [req.params.id]);
     cambios.emit('registros');
+    res.status(204).end();
+
+    const rutas = [rows[0].foto, rows[0].foto_conciliador, rows[0].firma].filter(Boolean);
+    for (const ruta of rutas) {
+      const { rows: otras } = await pool.query(
+        `select 1 from ${REGISTROS} where foto = $1 or foto_conciliador = $1 or firma = $1 limit 1`,
+        [ruta]
+      );
+      if (otras.length === 0) {
+        eliminarEvidencia(ruta).catch((err) => console.error('Limpieza de evidencia huerfana', ruta, err));
+      }
+    }
   } catch (err) {
     console.error('DELETE /registros/:id', err);
     res.status(500).json({ error: 'No se pudo eliminar el registro.' });

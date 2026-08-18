@@ -5,14 +5,21 @@ import { activarSincronizacionAutomatica, pendientes } from './colaSincronizacio
 import { ejecutarOperacionUsuarios } from './usuariosProveedor.js';
 import { ejecutarOperacionRegistros } from './registrosProveedor.js';
 import { supabase } from './supabaseClient.js';
+import { API_LISTO } from './apiClient.js';
 
 async function ejecutarOperacion(op) {
   if (op.tabla === 'usuarios') return ejecutarOperacionUsuarios(op);
   if (op.tabla === 'registros') return ejecutarOperacionRegistros(op);
 }
 
+// La cola offline debe procesarse siempre que exista un backend real al
+// cual escribir — api-roturas (API_LISTO) o, mientras tanto, Supabase. El
+// bug corregido aca (ver informe tecnico de Tecnologia): antes esta funcion
+// se apagaba por completo si Supabase no estaba configurado, aunque
+// API_LISTO estuviera activo — dejaba la cola offline sin sincronizar nunca
+// en produccion corporativa (sin Supabase, con la API sí lista).
 export function iniciarSincronizacionGlobal() {
-  if (!supabase) return () => {};
+  if (!API_LISTO && !supabase) return () => {};
   return activarSincronizacionAutomatica(ejecutarOperacion);
 }
 

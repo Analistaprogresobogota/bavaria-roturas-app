@@ -19,11 +19,14 @@ const COLUMNAS = [
   { k: 'opm', l: 'OPM' },
 ];
 
-// Fotos reales vienen como data URI ("data:image/..."); el seed historico
-// viejo a veces trae el texto plano "CONC" como marcador de "conciliado sin
-// foto" — no es una imagen, no se debe intentar renderizar como <img>.
+// Una evidencia capturada offline y aun no subida llega como data URI
+// ("data:image/..."); una ya subida a la nube corporativa llega como una URL
+// temporal firmada ("https://...") que resolverUrlsEvidencia ya intercambio
+// por la ruta relativa. El seed historico viejo a veces trae el texto plano
+// "CONC" como marcador de "conciliado sin foto" — no es una imagen, no se
+// debe intentar renderizar como <img>.
 function esImagenValida(v) {
-  return typeof v === 'string' && v.startsWith('data:image');
+  return typeof v === 'string' && (v.startsWith('data:image') || v.startsWith('https://'));
 }
 
 export function VistaRegistros({ puedeEliminar }) {
