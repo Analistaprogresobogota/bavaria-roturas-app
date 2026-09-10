@@ -1,20 +1,20 @@
 # Totales de control — migración App de Roturas · CD
 
-Corte del export: ver fecha de commit de este archivo en git.
+Corte del export: 2026-09-10 (ver fecha de commit de este archivo en git para el corte exacto).
 
 ## Origen (Supabase, `public`)
 
 | Tabla | Filas en origen | Con evidencia base64 pendiente |
 |---|---|---|
 | `usuarios` | 13 | — (no aplica) |
-| `registros` | 604 | 4 filas (`foto`/`foto_conciliador`/`firma` con imagen real; el resto del piloto no tiene evidencia real capturada) |
+| `registros` | 900 | por confirmar con `migrar-evidencias.mjs --dry-run` (la consulta agregada sobre estas 3 columnas ya no responde por el volumen actual — usar el script, que es idempotente y se salta solo lo que ya tenga ruta) |
 
 ## Archivos generados
 
 | Archivo | Filas que inserta |
 |---|---|
 | `01_usuarios.sql` | 13 |
-| `02_registros.sql` | 604 |
+| `02_registros.sql` | 900 |
 
 ## Cómo reconciliar después de cargar
 
@@ -23,7 +23,7 @@ coincidan estos conteos:
 
 ```sql
 select count(*) from progreso.usuarios;    -- debe dar 13
-select count(*) from progreso.registros;   -- debe dar 604
+select count(*) from progreso.registros;   -- debe dar 900
 ```
 
 Y después de correr `migrar-evidencias.mjs` (sin `--dry-run`):
